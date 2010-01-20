@@ -1,0 +1,181 @@
+= Guardian 
+
+Guardian is an authorization plugin for Rails build on top of the powerful rails-authorization-plugin[http://github.com/DocSavage/rails-authorization-plugin].
+It is to rails-authorization-plugin as Ubuntu is to Debian - a more user-friendly distribution. 
+
+The main features are:
+* declarative role definition in the authorized user model as well as database based role definition
+* declarative permissions definition at one place (per controller) using a simple and very readable micro DSL
+* uses a concept of an authorized context for declaratively marking the parts of your code that should be checked for permissions
+* really fine-grained access control (you are not restricted to controller actions access control only but can go further)
+* easy to start with
+* versatile in its possibilities (courtesy of rails-authorization-plugin[http://github.com/DocSavage/rails-authorization-plugin].)
+
+Some of the other improvements or additions to the rails-authorization-plugin:
+* a more standard way of defining the configuration constants
+* added a concept of superuser - a role that has a universal access to all context without explicitly declaring it
+* on_access_denied event handler for controllers
+* on_login_required event handler for controllers
+* shorter name & shorter installation and usage instructions :)
+
+WARNING: I'm not going to cover all the possibilities of this thing here. If you think you are familiar with the basics I describe here,
+jump right to the rails-authorization-plugin home page and read the stuff that's written there (mainly the parts about the authorized user API and the authorizable models API).
+
+== Assumptions
+
+Your controllers have to implement the current_user method.
+This should be no problem with the Rails authentication systems used these days.
+
+== Installation
+
+First, install the plugin: 
+
+  ./script/plugin install git://github.com/milan-novota/guardian.git
+
+Add this to your <code>/config/preinitializer.rb</code> file (create it if it doesn't exist):
+
+  USE_ROLES_TABLE = true              # false if you don't plan to use the database table for saving the roles
+  AUTHORIZABLE_BY_DEFAULT = true      # false if you don't want all the models to be authorizable by default
+ 
+Create file <code>config/initializers/authorization.rb</code>, add these lines and set the constants to whatever you think seems OK:
+
+  SUPERUSER_ROLE = 'admin'                # this role will have full acces in any authorized context without explicitly defining it
+  LOGIN_REQUIRED_REDIRECTION = '/login'
+  LOGIN_REQUIRED_MESSAGE = 'Log in first'
+  PERMISSION_DENIED_REDIRECTION = ''
+  PERMISSION_DENIED_MESSAGE = "You are not cool enough to do this."
+  STORE_LOCATION_METHOD = :store_location # how to store actual location before we redirect after login required event
+ 
+If you plan to use the database for persisting the roles and users to roles relationships (recommended):
+
+  ./script/generate role_model Role
+  rake db:migrate
+
+Add this to your User model:
+  
+  acts_as_authorized_user
+
+That's it!
+
+== Usage
+
+Just to make things clear - as you probably know, there are three main parts to every authorization system - users, roles and permissions, which consists
+of a user in some role and a context (in which this user is allowed to operate). Guardian is not different in this. 
+
+Users are easy (you should have your User model ready by now). Let's start with roles.
+
+=== Roles
+
+Role can be based on virtually any condition that you think should affect the fact, that at some moment in time some users have access to some feature of the system and some don't. And when I say any, I mean any:
+
+  class Users
+    acts_as_authorized_user
+    has_role 'lucky bastard', :if => lambda { rand == 0.32456112353 }     # really ephemeric role - changes randomly no matter of conditions
+    has_role 'self of user',  :if => lambda {|u1, u2| u1.id == u2.id }    # ehternal role - user will occupy it as long as she exists
+    has_role 'author of post',:if => lambda {|u,p| p.author == u }        # user has this role for the time the post exists (or he makes up his mind about the authorship of the post)
+    has_role 'adult',         :if => lambda {|u| u.adult? }
+
+    def adult?
+      age > 18
+    end
+
+    ...
+
+  end
+
+That was a role definition by function. Another way of assigning a role to a user is by doing it in a database via a set of methods provided by r-a-p:
+
+  user.has_role "admin" 
+  user.has_role "manager of", user2
+
+You can query your objects whether they have some role or they are in a specific relationships with other objects:
+
+  user.has_role? "admin"
+  user.has_role? "manager of", user2
+  user2.accepts_role "manager", user
+
+Actually, you can do much more, just check out the r-a-p documentation.
+
+=== Permissions - Contexts
+
+Let's say you are about to build a mini app which will serve as your online diary. Your permissions definition could look like this:
+
+  class DiaryContoller << ApplicationController
+    
+    grant do
+      grant "author of post"
+      can   "update post"
+
+      grant "self of user or friend of user"
+      can   "get all user's posts"
+
+      grant "author of post or 'lucky bastard'"
+      can   "get post"
+    end
+
+    def index
+      @user = params[:user]
+      authorized_context "get all users's posts" do
+        @posts = @user.posts
+      end
+    end
+
+    def show
+      @post = Post.find(params[:id])
+      authorized_context "get post"
+    end
+
+    def edit
+      @post = Post.find(params[:id])
+      authorized_context "update post"
+    end
+
+    def update
+      @post = Post.find(params[:id])
+      authorized_context "update post" do
+        ...
+      end
+    end
+
+  end
+
+Use of authorized_context in every method might seem quite chatty for some people, I know. However, you don't need to use the authorized_context declaration if you really don't need to.
+You can easily identify these contexts with particular actions.
+
+  grant do
+    grant "author of post"
+    can   "update post" => [:edit, :update]
+
+    grant "self of user or friend of user"
+    can   "get all user's posts"
+
+    grant "author of post or 'lucky bastard'"
+    can   "get post" => :show
+  end
+
+When using this form of permission declaration, the contexts are checked in a before_filter, which means you need to set up the instance variables needed for authorization before these are evaluated. 
+
+If you want to know more, check the r-a-p documentation.
+
+=== Ideological background
+
+The basic concept of authorization, as I understand it, is a role. Role can express various things:
+
+   1. relation of a user to the system as a whole (eg. to be an admin of the system)
+   2. relation of a user to some kind of entities (eg. to be a moderator of comments)
+   3. relation of a user to some particular entity (eg. to be an owner of some resource)
+   4. some other complex relation (eg. to be a friend of a user that is a owner of some resource)
+   5. that user has some attribute(s) or it responds to some message in some particular way (eg. to be a teenager)
+
+A really fine grained authorization system should allow you to define role for a user based on any of the above mentioned criteria. Furthermore, it should allow you to set more than one role for a user. (The simplest forms of authorization plugins for Rails usually allow you define just the first kind of roles and set just one role for a user.)
+
+
+The other part of authoriation is a mechanism that decides which part of code to run (or not to run) based on the fact if a user fits into some role (set of roles) or not. To apply this mechanism, we have to find the points where the authorization should take place and select roles for which the code should or should not be run.
+
+The way that works for me in Rails is to define roles on the model level and to leave authorization mechanism (setting allowed roles for parts of code that I want to be authorized and asking if current user has the role that is permitted to run the part) entirely for controllers/views.
+
+For this I use this plugin. rails-authorization-plugin has all the possibilities I just mentioned built right into it (various kinds of roles, many roles for one user, authorization on controller and view level). My wrapper on top of it provides me with some more conveniences such as authorized contexts and computed roles.
+
+=== Disclaimer
+
+This plugin is a work in progress and I don't recommend to use it in any circumstances.
